@@ -1,10 +1,19 @@
 #include <math.h>
+#include <termios.h>
+#include <fcntl.h>
+#include <signal.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <string.h>
 #include <time.h>
+
+#define MAX(a,b) (((a)>(b))?(a):(b))
+#define MIN(a,b) (((a)<(b))?(a):(b))
+#define RAND() ((double)rand() / (double)RAND_MAX)
+
 
 
 struct vec3 {
@@ -21,34 +30,37 @@ struct vec2 {
 struct cube {
     struct vec3 rotation;
     struct vec2 position;
+    struct vec2 velocity;
+    struct vec3 rotational_velocity;
     double size;
+};
+
+struct bounds {
+    struct vec2 min;
+    struct vec2 max;
 };
 
 void clearScreen() { printf("\033[H\033[J"); }
 
-void moveCursorToTopLeft() { printf("\033[H"); }
+void enterAlternateBuffer() { printf("\e[?1049h"); }
+void exitAlternateBuffer() { printf("\e[?1049l"); }
+
+void restore_terminal(int signo) {
+    exitAlternateBuffer();
+    fflush(stdout);
+    exit(0);
+}
+
 
 int color = 31;
 char chars[3] = {'#', '*', '~'};
-struct vec2 aspectRatio = {1, 1};
+struct vec2 aspectRatio;
+struct bounds bounds;
+struct bounds prev_bounds;
 
 // Function to compute cross product of vector AB and AC
 double crossProduct(struct vec2 A, struct vec2 B, struct vec2 C) {
     return (B.x - A.x) * (C.y - A.y) - (B.y - A.y) * (C.x - A.x);
-}
-
-// sort points lexicographically
-void sortPoints(struct vec2 *points, size_t size) {
-    for (int i = 0; i < size; i++) {
-        for (int j = i + 1; j < size; j++) {
-            if (points[j].x < points[i].x ||
-                (points[j].x == points[i].x && points[j].y < points[i].y)) {
-                struct vec2 temp = points[i];
-                points[i] = points[j];
-                points[j] = temp;
-            }
-        }
-    }
 }
 
 int pointInTriangle(struct vec2 p, struct vec2 a, struct vec2 b, struct vec2 c) {
@@ -65,26 +77,20 @@ int pointInQuad(struct vec2 p, struct vec2 q[4]) {
 }
 
 
-void getBounds(struct vec2 *points, size_t size, struct vec2 *minBound,
-               struct vec2 *maxBound) {
-    *minBound = points[0];
+void getBounds(struct vec2 *points, size_t size) {
+    bounds.min.x = points[0].x;
+    bounds.min.y = points[0].y;
+    bounds.max.x = points[0].x;
+    bounds.max.y = points[0].y;
 
-    *maxBound = points[0];
     for (size_t i = 1; i < size; i++) {
-        if (points[i].x < minBound->x) {
-            minBound->x = points[i].x;
-        }
-        if (points[i].y < minBound->y) {
-            minBound->y = points[i].y;
-        }
-        if (points[i].x > maxBound->x) {
-            maxBound->x = points[i].x;
-        }
-        if (points[i].y > maxBound->y) {
-            maxBound->y = points[i].y;
-        }
+        if (points[i].x < bounds.min.x) bounds.min.x = points[i].x;
+        if (points[i].y < bounds.min.y) bounds.min.y = points[i].y;
+        if (points[i].x > bounds.max.x) bounds.max.x = points[i].x;
+        if (points[i].y > bounds.max.y) bounds.max.y = points[i].y;
     }
 }
+
 void getColoredChars(char faceString[3][8], char chars[3]) {
     for (int i = 0; i < 3; i++) {
         int code = color + i;
@@ -99,42 +105,36 @@ void getColoredChars(char faceString[3][8], char chars[3]) {
 }
 
 void draw(struct vec2 faces[3][4], char chars[], struct winsize *w) {
-    struct vec2 minBound;
-    struct vec2 maxBound;
-
-    int padding = 2;
-
     char coloredChars[3][8];
     getColoredChars(coloredChars, chars);
 
-    getBounds((struct vec2 *)faces, 12, &minBound, &maxBound);
+    getBounds((struct vec2 *)faces, 12);
 
-    int x = floor(minBound.x / aspectRatio.x * w->ws_col) - padding;
-    int y = floor(minBound.y / aspectRatio.y * w->ws_row) - padding;
-    int size_x = ceil(maxBound.x / aspectRatio.x * w->ws_col) + padding;
-    int size_y = ceil(maxBound.y / aspectRatio.y * w->ws_row) + padding;
+    struct bounds dirtyBounds;
+    dirtyBounds.min.x = fmin(bounds.min.x, prev_bounds.min.x);
+    dirtyBounds.min.y = fmin(bounds.min.y, prev_bounds.min.y);
+    dirtyBounds.max.x = fmax(bounds.max.x, prev_bounds.max.x);
+    dirtyBounds.max.y = fmax(bounds.max.y, prev_bounds.max.y);
+    prev_bounds = bounds;
 
-    if (size_x > w->ws_col) {
-        size_x = w->ws_col;
-    }
+    int x, y, size_x, size_y;
+    x = floor((dirtyBounds.min.x / aspectRatio.x) * w->ws_col);
+    y = floor((dirtyBounds.min.y / aspectRatio.y) * w->ws_row);
+    size_x = ceil((dirtyBounds.max.x / aspectRatio.x) * w->ws_col);
+    size_y = ceil((dirtyBounds.max.y / aspectRatio.y) * w->ws_row);
 
-    if (size_y > w->ws_row) {
-        size_y = w->ws_row;
-    }
-
-    if (x < 0) {
-        x = 0;
-    }
-
-    if (y < 0) {
-        y = 0;
-    }
+    if (size_x > w->ws_col) { size_x = w->ws_col; }
+    if (size_y > w->ws_row) { size_y = w->ws_row; }
+    if (x < 0) { x = 0; }
+    if (y < 0) { y = 0; }
 
     char output[size_y][size_x][8];
     for (int i = y; i < size_y; i++) {
         for (int j = x; j < size_x; j++) {
-            struct vec2 P = {(double)j * aspectRatio.x / w->ws_col,
-                             (double)i * aspectRatio.y / w->ws_row};
+            struct vec2 P = {
+                ((double)j + 0.5) / w->ws_col * aspectRatio.x,
+                ((double)i + 0.5) / w->ws_row * aspectRatio.y
+            };
             int c;
             for (c = 0; c < 3; c++) {
                 if (pointInQuad(P, faces[c])) {
@@ -148,7 +148,7 @@ void draw(struct vec2 faces[3][4], char chars[], struct winsize *w) {
         }
     }
 
-    printf("\033[H");      // move cursor to top-left (no full clear!)
+    printf("\033[H");      
 
     for (int i = 0; i < (size_y - y); i++) {
         printf("\033[%d;%dH", i + y + 1, x + 1);  // goto row/col (1-indexed)
@@ -156,13 +156,16 @@ void draw(struct vec2 faces[3][4], char chars[], struct winsize *w) {
             fputs(output[i][j], stdout);
         }
     }
+    printf("\e[?25l");
     fflush(stdout);
 
 }
 
-void updateCube(struct cube *cube, struct vec2 *velocity,
-                struct vec3 *rotational_velocity) {
-    // update position
+void updateCube(struct cube* cube) {
+    // get velocity
+    struct vec2 *velocity = &cube->velocity;
+    struct vec3 *rotational_velocity = &cube->rotational_velocity;
+
     cube->position.x += velocity->x;
     cube->position.y += velocity->y;
 
@@ -289,28 +292,30 @@ void updateFaces(struct cube *cube, struct vec2 projections[3][4]) {
 // change color variable range from 31 to 35
 void updateColor() { color = (color + 1) % 5 + 31; }
 
-void handleEdgeCollision(struct vec2 faces[3][4], struct vec2 *velocity,
-                         struct vec3 *rotational_velocity) {
-    struct vec2 minBound;
-    struct vec2 maxBound;
-    getBounds((struct vec2 *)faces, 12, &minBound, &maxBound);
+void handleEdgeCollision(struct vec2 faces[3][4], struct cube *cube) {
+    struct vec2 *velocity = &cube->velocity;
+    struct vec3 *rotational_velocity = &cube->rotational_velocity;
 
-    if (minBound.x < 0 && velocity->x < 0) {
+    if (bounds.min.x >= 0 && bounds.max.x <= aspectRatio.x &&
+        bounds.min.y >= 0 && bounds.max.y <= aspectRatio.y) {
+        return; // no collision
+    }
+    if (bounds.min.x < 0 && velocity->x < 0) {
         velocity->x = fabs(velocity->x);
         rotational_velocity->y *= -1;
         updateColor();
     }
-    if (maxBound.x > aspectRatio.x && velocity->x > 0) {
+    if (bounds.max.x > aspectRatio.x && velocity->x > 0) {
         velocity->x = -fabs(velocity->x);
         rotational_velocity->y *= -1;
         updateColor();
     }
-    if (minBound.y < 0 && velocity->y < 0) {
+    if (bounds.min.y < 0 && velocity->y < 0) {
         velocity->y = fabs(velocity->y);
         rotational_velocity->x *= -1;
         updateColor();
     }
-    if (maxBound.y > aspectRatio.y && velocity->y > 0) {
+    if (bounds.max.y > aspectRatio.y && velocity->y > 0) {
         velocity->y = -fabs(velocity->y);
         rotational_velocity->x *= -1;
         updateColor();
@@ -318,37 +323,102 @@ void handleEdgeCollision(struct vec2 faces[3][4], struct vec2 *velocity,
 }
 
 void updateAspectRatio(struct winsize *w) {
+    //detect change
     int size_x = w->ws_col;
     int size_y = w->ws_row * 2;
-    if (size_x > size_y) {
-        aspectRatio.x = (double)size_x / size_y;
-        aspectRatio.y = 1;
-    } else {
-        aspectRatio.x = 1;
-        aspectRatio.y = (double)size_y / size_x;
-    }
+    aspectRatio.x = (double)size_x / MIN(size_x, size_y);
+    aspectRatio.y = (double)size_y / MIN(size_x, size_y);
 }
 
+// Set terminal to raw mode (no buffering, no echo)
+struct termios orig_termios;
+
+void enableRawMode() {
+    tcgetattr(STDIN_FILENO, &orig_termios);
+    struct termios raw = orig_termios;
+    raw.c_lflag &= ~(ECHO | ICANON); // no echo, no canonical mode
+    tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+}
+
+// Restore terminal to normal mode
+void disableRawMode() {
+    tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
+}
+
+// Non-blocking keyboard read
+int kbhit() {
+    struct timeval tv = {0, 0};
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(STDIN_FILENO, &readfds);
+    return select(STDIN_FILENO+1, &readfds, NULL, NULL, &tv);
+}
+
+int getch() {
+    char c;
+    if (read(STDIN_FILENO, &c, 1) == 1) return c;
+    return 0;
+}
+
+
+
+// Returns 1 if the program should quit, 0 otherwise
+int handleKeyboardInput(struct cube *cube) {
+    if (!kbhit()) return 0; // no key pressed
+
+    int c = getch();
+    if (c == 'q') return 1; // quit
+
+    if (c == '-') {
+        cube->size -= 0.05;
+        if (cube->size < 0.05) cube->size = 0.05; // minimum size
+    } else if (c == '+') {
+        cube->size += 0.05;
+        if (cube->size > 1.0) cube->size = 1.0; // maximum size
+    } 
+    return 0; // continue running
+}
+
+
 int main(int argc, char **argv) {
-    struct cube cube = {{0.1, 0.2, 0.3}, {0.5, 0.5}, 0.3};
+    struct cube cube;
+
+    cube.position = (struct vec2){0.3, 0.3};
+    cube.rotation = (struct vec3){0.1, 0.2, 0.3};
+    cube.size = 0.3;
+    cube.velocity = (struct vec2){0.01, 0.01};
+    cube.rotational_velocity = (struct vec3){0.05, 0.05, 0};
+
+
     struct vec2 faces[3][4];
-    struct vec2 velocity = {0.01, 0.01};
-    struct vec3 rotational_velocity = {0.05, 0.05, 0};
 
-    clearScreen();
+    enableRawMode();
+    atexit(disableRawMode); // ensure normal terminal on exit
+    enterAlternateBuffer();
+    signal(SIGINT, restore_terminal); // ensure normal terminal on Ctrl-C
 
-    struct winsize w;
+
+    struct winsize w, prev_w;
+    ioctl(STDOUT_FILENO, TIOCGWINSZ, &prev_w);
+
     while (1) {
         ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+        if (w.ws_col != prev_w.ws_col || w.ws_row != prev_w.ws_row) {
+            clearScreen();
+            prev_w = w;
+        }
         updateAspectRatio(&w);
         updateFaces(&cube, faces);
-        moveCursorToTopLeft();
         draw(faces, chars, &w);
-        handleEdgeCollision(faces, &velocity, &rotational_velocity);
-        updateCube(&cube, &velocity, &rotational_velocity);
+        handleEdgeCollision(faces, &cube);
+        updateCube(&cube);
         struct timespec ts = {0, 40 * 1000 * 1000};
+
+        if (handleKeyboardInput(&cube)) break;
+
         nanosleep(&ts, NULL);
     }
 
+    exitAlternateBuffer();
     return 0; // make sure your main returns in
 }
