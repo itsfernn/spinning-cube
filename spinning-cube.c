@@ -157,12 +157,18 @@ void draw(struct vec2 faces[3][4], char chars[], struct winsize *w) {
 
   printf("\033[H");
 
+  //make bold
+  printf("\033[1m");
+
   for (int i = 0; i < (size_y - y); i++) {
-    printf("\033[%d;%dH", i + y + 1, x + 1); // goto row/col (1-indexed)
+    printf("\033[%d;%dH", i + y + 1, x + 1);
     for (int j = 0; j < (size_x - x); j++) {
       fputs(output[i][j], stdout);
     }
   }
+  //end bold
+  printf("\033[0m");
+
   printf("\e[?25l");
   fflush(stdout);
 }
@@ -186,6 +192,7 @@ void rotate(struct vec3 *points, size_t size, struct vec3 rotation) {
     double x = points[i].x;
     double y = points[i].y;
     double z = points[i].z;
+
 
     double cx = cos(rotation.x), sx = sin(rotation.x);
     double cy = cos(rotation.y), sy = sin(rotation.y);
