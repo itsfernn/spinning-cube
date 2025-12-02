@@ -50,7 +50,7 @@ void restore_terminal(int signo) {
 }
 
 int color = 31;
-char chars[3] = {'#', '*', '~'};
+char chars[3] = {'#', '=', '+'};
 struct vec2 aspectRatio;
 struct bounds bounds;
 struct bounds prev_bounds;
