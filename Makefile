@@ -1,8 +1,9 @@
 CC = gcc
-FLAGS = -Wall -O3  -lm --fast-math
+CFLAGS = -Wall -O3 -ffast-math
+LDLIBS = -lm
 
 cube:
-	$(CC) $(FLAGS) -o cube spinning-cube.c
+	$(CC) $(CFLAGS) -o cube spinning-cube.c $(LDLIBS)
 
 
 clean:
