@@ -43,8 +43,12 @@ void clearScreen() { printf("\033[H\033[J"); }
 void enterAlternateBuffer() { printf("\e[?1049h"); }
 void exitAlternateBuffer() { printf("\e[?1049l"); }
 
+void hideCursor() { printf("\x1b[?25l"); }
+void restoreCursor() { printf("\x1b[?25h"); }
+
 void restore_terminal(int signo) {
   exitAlternateBuffer();
+  restoreCursor();
   fflush(stdout);
   exit(0);
 }
@@ -169,7 +173,7 @@ void draw(struct vec2 faces[3][4], char chars[], struct winsize *w) {
   //end bold
   printf("\033[0m");
 
-  printf("\e[?25l");
+  hideCursor();
   fflush(stdout);
 }
 
